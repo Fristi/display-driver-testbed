@@ -122,6 +122,7 @@ async fn main(_spawner: Spawner) -> ! {
     .with_sio1(peripherals.GPIO2)
     .with_sio2(peripherals.GPIO3)
     .with_sio3(peripherals.GPIO4)
+    .with_cs(cs_pin)
     .with_dma(peripherals.DMA_CH0)
     .into_async();
 
@@ -131,15 +132,12 @@ async fn main(_spawner: Spawner) -> ! {
         spi: Some(spi),
         rx_buf: Some(dma_rx_buf),
         tx_descriptors: Some(tx_descriptors),
-        bounce_buf: Some(bounce_buf),
-        cs: cs_pin
+        bounce_buf: Some(bounce_buf)
     };
 
     // Default QspiConfig: cmd_data_mode=Single, ram_data_mode=Quad (1-1-4)
     let bus = QspiDisplayBus::new(device, display_driver_qspi::QspiConfig::default());
-
-    let rst_pin = esp_hal::gpio::Output::new(peripherals.GPIO10, esp_hal::gpio::Level::High, esp_hal::gpio::OutputConfig::default());
-    let panel = Co5300::<GenericCo5300, _, _>::new(display_driver::LCDResetOption::new_pin(rst_pin));
+    let panel = Co5300::<GenericCo5300, _, _>::new(display_driver::LCDResetOption::none());
 
     // ── Framebuffer (static, 240×240 RGB565 = 115 200 bytes) ──────────────
     static mut FB_DATA: core::mem::MaybeUninit<FbType> = core::mem::MaybeUninit::uninit();
@@ -149,12 +147,6 @@ async fn main(_spawner: Spawner) -> ! {
         core::ptr::write_bytes(ptr, 0, 1);
         &mut *ptr
     };
-
-
-    axp2101.disable_aldo3().expect("nee");
-    Timer::after(Duration::from_millis(100)).await;
-    axp2101.enable_aldo3().expect("nee");
-    Timer::after(Duration::from_millis(100)).await;
 
     // ── Run async display init & drawing ───────────────────────────────────
     // Initialise display driver

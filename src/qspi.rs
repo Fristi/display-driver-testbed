@@ -20,7 +20,6 @@ pub struct EspHalQspiDevice<'d> {
     pub rx_buf: Option<DmaRxBuf>,
     pub tx_descriptors: Option<&'static mut [esp_hal::dma::DmaDescriptor]>,
     pub bounce_buf: Option<&'static mut [u8]>,
-    pub cs: Output<'d>
 }
 
 impl<'d> QspiDevice for EspHalQspiDevice<'d> {
@@ -34,9 +33,6 @@ impl<'d> QspiDevice for EspHalQspiDevice<'d> {
         let cmd = to_esp_command(&transaction.instruction);
         let addr = to_esp_address(&transaction.address);
         let data_mode = to_esp_data_mode(transaction.data_mode);
-
-        self.cs.set_low();
-
         let tx_descriptors = self.tx_descriptors.take().unwrap();
         let bounce_buf_full = self.bounce_buf.take().unwrap();
         
@@ -76,8 +72,6 @@ impl<'d> QspiDevice for EspHalQspiDevice<'d> {
         let (spi, buf) = transfer.wait();
         let (desc, _) = buf.split();
 
-        self.cs.set_high();
-
         self.spi = Some(spi);
         self.tx_descriptors = Some(desc);
         self.bounce_buf = Some(bounce_buf_full);
@@ -92,8 +86,6 @@ impl<'d> QspiDevice for EspHalQspiDevice<'d> {
         let cmd = to_esp_command(&transaction.instruction);
         let addr = to_esp_address(&transaction.address);
         let data_mode = to_esp_data_mode(transaction.data_mode);
-
-        self.cs.set_low();
 
         let mut rx_buf = self.rx_buf.take().unwrap();
         rx_buf.set_length(buffer.len());
@@ -110,8 +102,6 @@ impl<'d> QspiDevice for EspHalQspiDevice<'d> {
         let (spi, buf) = transfer.wait();
         
         buffer.copy_from_slice(&buf.as_slice()[..buffer.len()]);
-
-        self.cs.set_high();
 
         self.spi = Some(spi);
         self.rx_buf = Some(buf);
