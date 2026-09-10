@@ -1,0 +1,189 @@
+import { VerticalBox, HorizontalBox } from "std-widgets.slint";
+
+// Custom component for displaying data cards at the bottom
+component DataCard inherits Rectangle {
+    in property <string> title;
+    in property <string> value;
+    in property <string> unit;
+    in property <brush> accent-color;
+
+    // 10% white opacity to create a "glass-morphism" look
+    background: #ffffff10; 
+    border-radius: 12px;
+    border-width: 1px;
+    border-color: #ffffff20;
+
+    VerticalLayout {
+        padding: 10px;
+        spacing: 2px;
+        alignment: center;
+        
+        Text {
+            text: root.title;
+            font-size: 14px;
+            color: #aaaaaa;
+        }
+        HorizontalLayout {
+            alignment: center;
+            spacing: 4px;
+            Text {
+                text: root.value;
+                font-size: 28px;
+                font-weight: 700;
+                color: #ffffff;
+            }
+            Text {
+                y: 10px;
+                text: root.unit;
+                font-size: 16px;
+                color: root.accent-color;
+            }
+        }
+    }
+}
+
+// A custom progress bar component with a vivid gradient fill
+component GradientBar inherits Rectangle {
+    in property <float> progress: 0.7; // Range: 0.0 to 1.0
+    
+    height: 10px; 
+    background: #333333;
+    border-radius: self.height / 2; // Dynamic border radius
+    clip: true;
+
+    Rectangle {
+        x: 0;
+        width: parent.width * parent.progress;
+        height: parent.height;
+        border-radius: parent.border-radius;
+        // More obvious gradient: Yellow-Orange to Red-Purple
+        background: @linear-gradient(90deg, #fce38a 0%, #f38181 100%);
+    }
+}
+
+export component MainWindow inherits Window {
+    width: 390px;
+    height: 450px;
+    title: "Environment Monitor";
+    
+    // Global background: Deep vertical gradient
+    background: @linear-gradient(180deg, #1e2a45 0%, #0d0d12 100%);
+
+    VerticalLayout {
+        // Increased top/horizontal padding to avoid round corners cutting off text
+        padding-top: 40px; 
+        padding-left: 30px;
+        padding-right: 30px;
+        padding-bottom: 20px;
+        spacing: 12px; // Tighter layout to fit new footer
+
+        // --- Header: Date and Time ---
+        HorizontalLayout {
+            alignment: space-between;
+            Text {
+                text: "FRI, JAN 15, 2026"; // Updated year
+                color: #8f9bb3;
+                font-size: 14px;
+            }
+            Text {
+                text: "19:13";
+                color: #ffffff;
+                font-size: 14px;
+                font-weight: 700;
+            }
+        }
+
+        // --- Middle: Main Visual Center (Temperature) ---
+        Rectangle {
+            height: 160px;
+            
+            // Decorative background circle
+            Rectangle {
+                width: 150px;
+                height: 150px;
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+                border-radius: 30px;
+                background: @linear-gradient(135deg, #ff9a9e 0%, #fecfef 100%);
+                opacity: 0.15;
+            }
+
+            // Core temperature text display
+            VerticalLayout {
+                alignment: center;
+                spacing: 0px;
+                
+                Text {
+                    text: "12°";
+                    font-size: 70px;
+                    font-weight: 300;
+                    color: white;
+                    horizontal-alignment: center;
+                }
+                Text {
+                    text: "A Bit Cold";
+                    font-size: 18px;
+                    color: #69f0ae; 
+                    horizontal-alignment: center;
+                    letter-spacing: 2px;
+                }
+            }
+        }
+
+        // --- Air Quality Section ---
+        VerticalLayout {
+            spacing: 6px;
+            HorizontalLayout {
+                alignment: space-between;
+                Text { text: "Air Quality (AQI)"; color: white; font-size: 14px; }
+                Text { text: "Not Bad"; color: #fce38a; font-size: 14px; }
+            }
+            GradientBar {
+                progress: 0.85;
+            }
+        }
+
+        // --- Bottom: Detailed Data Grid ---
+        HorizontalLayout {
+            spacing: 15px;
+            height: 75px; 
+
+            DataCard {
+                width: 50%;
+                title: "HUMIDITY";
+                value: "42";
+                unit: "%";
+                accent-color: #4facfe;
+            }
+
+            DataCard {
+                width: 50%;
+                title: "PM 2.5";
+                value: "18";
+                unit: "ug";
+                accent-color: #f093fb;
+            }
+        }
+        
+        // --- Footer: Technical Info ---
+        VerticalLayout {
+            spacing: 4px;
+            alignment: end;
+            
+            Text {
+                text: "Powered by SiFli-rs";
+                font-size: 15px;
+                font-weight: 700;
+                color: #ffffff;
+                horizontal-alignment: center;
+                opacity: 0.8;
+            }
+            Text {
+                text: "Slint run on SF32LB52x, written in pure rust";
+                font-size: 11px;
+                color: #666666;
+                horizontal-alignment: center;
+            }
+        }
+    }
+}

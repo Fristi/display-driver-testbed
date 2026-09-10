@@ -9,50 +9,59 @@
 
 use core::cell::RefCell;
 
+use alloc::rc::Rc;
 use defmt::info;
 use display_co5300_test::axp2101::{self, Axp2101Power};
+use display_driver::{Area, DisplayDriver, FrameControl};
 use embassy_executor::Spawner;
-use embassy_time::{Duration, Timer};
+use embassy_time::{Duration, Timer, Instant};
 use esp_backtrace as _;
 use esp_hal::{clock::CpuClock, i2c::master::I2c};
 use esp_hal::timer::timg::TimerGroup;
 use esp_println as _;
 
-use embedded_graphics::{
-    framebuffer::{buffer_size, Framebuffer},
-    geometry::{Point, Size},
-    mono_font::{ascii::FONT_9X18_BOLD, MonoTextStyle},
-    pixelcolor::{
-        raw::{BigEndian, RawU16},
-        Rgb565,
-    },
-    prelude::*,
-    primitives::{Circle, PrimitiveStyle, Rectangle},
-    text::{Alignment, Text},
-};
-
 // Display driver
 use display_driver_qspi::QspiDisplayBus;
 use display_driver_co5300::{spec::GenericCo5300, Co5300};
 
+// Slint
+slint::include_modules!();
+use slint::platform::software_renderer::Rgb565Pixel;
+
 
 extern crate alloc;
 
-// ---------------------------------------------------------------------------
-// Display geometry
-// ---------------------------------------------------------------------------
+// Allocator
+const HEAP_SIZE: usize = 256 * 1024;
+static mut HEAP: [u8; HEAP_SIZE] = [0; HEAP_SIZE];
+#[global_allocator]
+static ALLOCATOR: embedded_alloc::Heap = embedded_alloc::Heap::empty();
 
-const WIDTH: usize = 240;
-const HEIGHT: usize = 240;
+// Double buffer allocation to satisfy the 2-line write requirement
+static mut LINE_BUFFER: [Rgb565Pixel; 480 as usize * 2] =
+    [Rgb565Pixel(0); 480 as usize * 2];
 
-type FbType = Framebuffer<
-    Rgb565,
-    RawU16,
-    BigEndian,
-    WIDTH,
-    HEIGHT,
-    { buffer_size::<Rgb565>(WIDTH, HEIGHT) },
->;
+/// Slint platform implementation for our MCU
+struct McuPlatform {
+    window: Rc<slint::platform::software_renderer::MinimalSoftwareWindow>,
+    start_time: Instant,
+}
+
+impl slint::platform::Platform for McuPlatform {
+    fn create_window_adapter(
+        &self,
+    ) -> Result<Rc<dyn slint::platform::WindowAdapter>, slint::PlatformError> {
+        Ok(self.window.clone())
+    }
+
+    fn duration_since_start(&self) -> core::time::Duration {
+        self.start_time.elapsed().into()
+    }
+
+    fn debug_log(&self, _arguments: core::fmt::Arguments) {
+        // info!("{}", defmt::Debug2Format(&arguments));
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Entry point
@@ -69,10 +78,13 @@ esp_bootloader_esp_idf::esp_app_desc!();
 #[esp_rtos::main]
 async fn main(_spawner: Spawner) -> ! {
 
+    unsafe { ALLOCATOR.init(core::ptr::addr_of_mut!(HEAP) as usize, HEAP_SIZE) }
+
+
     let config = esp_hal::Config::default().with_cpu_clock(CpuClock::max());
     let peripherals = esp_hal::init(config);
 
-    esp_alloc::heap_allocator!(#[esp_hal::ram(reclaimed)] size: 65536);
+    // esp_alloc::heap_allocator!(#[esp_hal::ram(reclaimed)] size: 65536);
 
     let timg0 = TimerGroup::new(peripherals.TIMG0);
     let sw_interrupt =
@@ -139,83 +151,160 @@ async fn main(_spawner: Spawner) -> ! {
     let bus = QspiDisplayBus::new(device, display_driver_qspi::QspiConfig::default());
     let panel = Co5300::<GenericCo5300, _, _>::new(display_driver::LCDResetOption::none());
 
-    // ── Framebuffer (static, 240×240 RGB565 = 115 200 bytes) ──────────────
-    static mut FB_DATA: core::mem::MaybeUninit<FbType> = core::mem::MaybeUninit::uninit();
-    let fb = unsafe {
-        let ptr = core::ptr::addr_of_mut!(FB_DATA) as *mut FbType;
-        // Zero-initialize directly in memory to avoid stack copy
-        core::ptr::write_bytes(ptr, 0, 1);
-        &mut *ptr
-    };
 
     // ── Run async display init & drawing ───────────────────────────────────
     // Initialise display driver
-    let disp = display_driver::DisplayDriver::builder(bus, panel)
+    let mut disp = display_driver::DisplayDriver::builder(bus, panel)
         .with_color_format(display_driver::ColorFormat::RGB565)
         .init(&mut embassy_time::Delay)
         .await
         .unwrap();    
     
+    disp.set_brightness(0xff).await.unwrap();
 
- // Wrap with framebuffer for embedded-graphics drawing
-    let mut fb_disp = display_co5300_test::framebuffered::FrameBufferedDisplayDriver::new(disp, fb);
+    // fb_disp.set_brightness(0xff).await.unwrap();
+    // info!("Brightness set to 255.");
 
+// --- Slint Platform Setup ---
+    info!("Slint Platform Init");
+    let window = slint::platform::software_renderer::MinimalSoftwareWindow::new(Default::default());
+    window.set_size(slint::PhysicalSize::new(
+        480,
+        480
+    ));
 
-    fb_disp.set_brightness(0xff).await.unwrap();
-    info!("Brightness set to 255.");
+    slint::platform::set_platform(alloc::boxed::Box::new(McuPlatform {
+        window: window.clone(),
+        start_time: Instant::now(),
+    }))
+    .unwrap();
 
-    // ── Draw demo scene ──────────────────────────────────────────
-    fb_disp.clear(Rgb565::WHITE).unwrap();
-
-    // Three overlapping coloured shapes
-    Rectangle::new(Point::new(10, 40), Size::new(100, 100))
-        .into_styled(PrimitiveStyle::with_fill(Rgb565::RED))
-        .draw(&mut fb_disp)
-        .unwrap();
-
-    Rectangle::new(Point::new(70, 70), Size::new(100, 100))
-        .into_styled(PrimitiveStyle::with_fill(Rgb565::GREEN))
-        .draw(&mut fb_disp)
-        .unwrap();
-
-    Circle::new(Point::new(110, 110), 110)
-        .into_styled(PrimitiveStyle::with_fill(Rgb565::BLUE))
-        .draw(&mut fb_disp)
-        .unwrap();
-
-    // Title text
-    let title = MonoTextStyle::new(&FONT_9X18_BOLD, Rgb565::WHITE);
-    Text::with_alignment("CO5300 QSPI", Point::new(120, 22), title, Alignment::Center)
-        .draw(&mut fb_disp)
-        .unwrap();
-
-    // Subtitle
-    let sub = MonoTextStyle::new(&FONT_9X18_BOLD, Rgb565::CYAN);
-    Text::with_alignment("ESP32-S3 display-driver", Point::new(120, 232), sub, Alignment::Center)
-        .draw(&mut fb_disp)
-        .unwrap();
-
-    // Flush framebuffer → display
-    info!("Flushing framebuffer to display (in chunks)...");
-
-    // fb_disp.flush().await.unwrap();
-    
-    fb_disp.flush_lines_with_frame_control(0, 59, display_driver::FrameControl::new_first()).await.unwrap();
-    fb_disp.flush_lines_with_frame_control(60, 119, display_driver::FrameControl { first: false, last: false }).await.unwrap();
-    fb_disp.flush_lines_with_frame_control(120, 179, display_driver::FrameControl { first: false, last: false }).await.unwrap();
-    fb_disp.flush_lines_with_frame_control(180, 239, display_driver::FrameControl::new_last()).await.unwrap();
-    
-    info!("Done! Display should show the demo scene.");
+    // --- UI Creation ---
+    let _ui = MainWindow::new().unwrap();
 
     info!("Entering idle loop.");
 
     loop {
-        let s = axp2101.read_chip_id().unwrap();
-        let v = axp2101.is_vbus_in().unwrap();
+        info!("Start a frame");
+        slint::platform::update_timers_and_animations();
 
-        info!("Status : and {} and {}", s, v);
+        // State tracker for the double buffering logic
+        let mut last_even_line_index: Option<usize> = None;
 
+        window.draw_if_needed(|renderer| {
+            unsafe {
+                renderer.render_by_line(DisplayWrapper {
+                    display: &mut disp,
+                    line_buffer: &mut LINE_BUFFER,
+                    last_even_line: &mut last_even_line_index,
+                })
+            };
+        });
+
+        info!("Finished a frame");
+        if !window.has_active_animations() {
+            if let Some(duration) = slint::platform::duration_until_next_timer_update() {
+                let embassy_duration = Duration::from_micros(duration.as_micros() as u64);
+                Timer::after(embassy_duration).await;
+            } else {
+                Timer::after(Duration::from_millis(10)).await;
+            }
+        }
         Timer::after(Duration::from_secs(1)).await;
     }
 
+}
+
+struct DisplayWrapper<'a, D> {
+    display: &'a mut D,
+    /// Buffer capable of holding exactly 2 lines of pixel data.
+    line_buffer: &'a mut [slint::platform::software_renderer::Rgb565Pixel],
+    /// Tracks the line index of the previously written even line.
+    last_even_line: &'a mut Option<usize>,
+}
+
+impl<'a, B: display_driver::DisplayBus, P: display_driver::Panel<B>>
+    slint::platform::software_renderer::LineBufferProvider
+    for DisplayWrapper<'a, DisplayDriver<B, P>>
+{
+    type TargetPixel = slint::platform::software_renderer::Rgb565Pixel;
+
+    fn process_line(
+        &mut self,
+        line: usize,
+        range: core::ops::Range<usize>,
+        render_fn: impl FnOnce(&mut [Self::TargetPixel]),
+    ) {
+        let width = range.len();
+
+        if line % 2 == 0 {
+            // --- Handling Even Line ---
+
+            // Check if we are overwriting a previous even line that never got its odd pair
+            if let Some(prev) = *self.last_even_line {
+                defmt::warn!("Discarding data: New Even line {} arrived while Even line {} was still pending", line, prev);
+            }
+
+            // Store state indicating this even line is buffered
+            *self.last_even_line = Some(line);
+
+            // Write to the FIRST half of the buffer (Offset 0)
+            // Memory Layout: [ <Even Line Data> | ... empty ... ]
+            render_fn(&mut self.line_buffer[0..range.end]);
+        } else {
+            // --- Handling Odd Line ---
+
+            match *self.last_even_line {
+                Some(prev_line) if prev_line == line - 1 => {
+                    // Valid pair sequence (e.g., Line 0 followed by Line 1)
+
+                    // Write to the SECOND half of the buffer, immediately following the even line.
+                    // Memory Layout: [ <Even Line Data> | <Odd Line Data> ]
+                    render_fn(&mut self.line_buffer[width..width + range.end]);
+
+                    // Construct Area covering exactly 2 lines
+                    let area = Area {
+                        x: range.start as u16,
+                        y: prev_line as u16, // Start from the Even line's Y
+                        w: width as u16,
+                        h: 2, // Strictly 2 lines
+                    };
+
+                    // Slice the buffer to include exactly both lines (2 * width)
+                    let buffer_slice = &self.line_buffer[0..width * 2];
+                    let byte_buffer: &[u8] = bytemuck::cast_slice(buffer_slice);
+
+                    // unsafe {
+                    //     cortex_m::Peripherals::steal()
+                    //         .SCB
+                    //         .clean_dcache_by_slice(byte_buffer);
+                    // }
+
+                    // Perform the transfer
+                    embassy_futures::block_on(self.display.write_pixels(
+                        area,
+                        FrameControl::new_standalone(),
+                        byte_buffer,
+                    ))
+                    .ok();
+                }
+                Some(prev_line) => {
+                    defmt::warn!(
+                        "Discarding data: Odd line {} follows unrelated Even line {}",
+                        line,
+                        prev_line
+                    );
+                }
+                None => {
+                    defmt::warn!(
+                        "Discarding data: Odd line {} arrived without preceding Even line",
+                        line
+                    );
+                }
+            }
+
+            // Whether successful or failed, the pair sequence is now concluded/broken.
+            *self.last_even_line = None;
+        }
+    }
 }
