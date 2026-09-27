@@ -160,7 +160,7 @@ async fn main(_spawner: Spawner) -> ! {
         .await
         .unwrap();    
     
-    disp.set_brightness(0xff).await.unwrap();
+    // disp.set_brightness(0xff).await.unwrap();
 
     // fb_disp.set_brightness(0xff).await.unwrap();
     // info!("Brightness set to 255.");
@@ -284,7 +284,8 @@ impl<'a, B: display_driver::DisplayBus, P: display_driver::Panel<B>>
                     embassy_futures::block_on(self.display.write_pixels(
                         area,
                         FrameControl::new_standalone(),
-                        byte_buffer,
+                        &byte_buffer[1..] //TODO: off by one? Which layer does this introduce? Suspect slint: https://github.com/jphein/esp32c6-watch/tree/03742a9db7cda4b60119bf6ab80fcf680be78594/crates/i-slint-renderer-software
+                        // &byte_buffer
                     ))
                     .ok();
                 }

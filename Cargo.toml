@@ -10,7 +10,7 @@ path = "./src/bin/main.rs"
 
 [dependencies]
 
-slint = { version = "1.17.1", default-features = false, features = ["renderer-software", "libm", "unsafe-single-threaded", "compat-1-2"] }
+slint = { version = "1.18.1", default-features = false, features = ["renderer-software", "libm", "unsafe-single-threaded", "compat-1-2"] }
 
 esp-hal = { version = "1.1.1", features = ["defmt", "esp32c6", "unstable", "rt"] }
 
@@ -51,7 +51,7 @@ embassy-futures = "0.1.2"
 
 
 [build-dependencies]
-slint-build = "1.7"
+slint-build = "1.18.1"
 
 # cargo build/run
 [profile.dev]
