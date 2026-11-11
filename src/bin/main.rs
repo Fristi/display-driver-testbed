@@ -22,10 +22,32 @@ use esp_println as _;
 
 // Display driver
 use display_driver_qspi::QspiDisplayBus;
-use display_driver_co5300::{spec::GenericCo5300, Co5300};
+use display_driver_co5300::{
+    spec::{Co5300Spec, PanelSpec},
+    Co5300,
+};
+
+/// Waveshare ESP32-C6-Touch-AMOLED-2.16 panel: 480x480 CO5300 AMOLED.
+///
+/// `GenericCo5300` in the driver crate is a 240x240 placeholder with a
+/// different init page, so it cannot be used for this panel.
+struct WaveshareAmoled480x480;
+
+impl PanelSpec for WaveshareAmoled480x480 {
+    const PHYSICAL_WIDTH: u16 = 480;
+    const PHYSICAL_HEIGHT: u16 = 480;
+    const PHYSICAL_X_OFFSET: u16 = 0;
+    const PHYSICAL_Y_OFFSET: u16 = 0;
+}
+
+impl Co5300Spec for WaveshareAmoled480x480 {
+    const INIT_PAGE_PARAM: u8 = 0x00;
+    const IGNORE_ID_CHECK: bool = true;
+}
 
 // Slint
 slint::include_modules!();
+use slint::ComponentHandle as _;
 use slint::platform::software_renderer::Rgb565Pixel;
 
 
@@ -93,7 +115,8 @@ async fn main(_spawner: Spawner) -> ! {
 
     info!("Embassy initialized!");
 
-    // Pins: https://github.com/waveshareteam/ESP32-C6-Touch-AMOLED-2.16/blob/main/02_Example/XiaoZhi-v2.2.5/main/boards/waveshare/esp32-c6-touch-amoled-2.06/config.h#L32
+    // Pins: Waveshare ESP32-C6-Touch-AMOLED-2.16, boards/waveshare/
+    // esp32-c6-touch-amoled-2.16/config.h (CS=15, PCLK=0, D0..D3=1..4)
 
 
     // peripherals.I2C0  →  I2c driver (implements embedded_hal::i2c::I2c)
@@ -108,6 +131,16 @@ async fn main(_spawner: Spawner) -> ! {
     let mut axp2101 = Axp2101Power::new(disp_dev);
 
     axp2101.init().expect("Failed to init AXP2101");
+
+    // The 2.16 board has no LCD reset pin: Waveshare resets the panel by
+    // power-cycling the ALDO3 rail. Without this the panel ignores init.
+    info!("Power-cycling panel rail (ALDO3)");
+    axp2101.enable_aldo3().expect("ALDO3 on");
+    Timer::after(Duration::from_millis(100)).await;
+    axp2101.disable_aldo3().expect("ALDO3 off");
+    Timer::after(Duration::from_millis(100)).await;
+    axp2101.enable_aldo3().expect("ALDO3 on");
+    Timer::after(Duration::from_millis(100)).await;
 
     let (rx_buffer, rx_descriptors, _, _) = esp_hal::dma_buffers!(4096, 0);
     let dma_rx_buf = esp_hal::dma::DmaRxBuf::new(rx_descriptors, rx_buffer).unwrap();
@@ -149,7 +182,8 @@ async fn main(_spawner: Spawner) -> ! {
 
     // Default QspiConfig: cmd_data_mode=Single, ram_data_mode=Quad (1-1-4)
     let bus = QspiDisplayBus::new(device, display_driver_qspi::QspiConfig::default());
-    let panel = Co5300::<GenericCo5300, _, _>::new(display_driver::LCDResetOption::none());
+    let panel =
+        Co5300::<WaveshareAmoled480x480, _, _>::new(display_driver::LCDResetOption::none());
 
 
     // ── Run async display init & drawing ───────────────────────────────────
@@ -160,12 +194,10 @@ async fn main(_spawner: Spawner) -> ! {
         .await
         .unwrap();    
     
-    // disp.set_brightness(0xff).await.unwrap();
+    disp.set_brightness(0xff).await.unwrap();
+    info!("Brightness set to 255.");
 
-    // fb_disp.set_brightness(0xff).await.unwrap();
-    // info!("Brightness set to 255.");
-
-// --- Slint Platform Setup ---
+    // --- Slint Platform Setup ---
     info!("Slint Platform Init");
     let window = slint::platform::software_renderer::MinimalSoftwareWindow::new(Default::default());
     window.set_size(slint::PhysicalSize::new(
@@ -180,7 +212,10 @@ async fn main(_spawner: Spawner) -> ! {
     .unwrap();
 
     // --- UI Creation ---
-    let _ui = MainWindow::new().unwrap();
+    let ui = MainWindow::new().unwrap();
+    // MinimalSoftwareWindow only renders once it is visible and dirty.
+    ui.show().unwrap();
+    window.request_redraw();
 
     info!("Entering idle loop.");
 
@@ -191,7 +226,7 @@ async fn main(_spawner: Spawner) -> ! {
         // State tracker for the double buffering logic
         let mut last_even_line_index: Option<usize> = None;
 
-        window.draw_if_needed(|renderer| {
+        let drew = window.draw_if_needed(|renderer| {
             unsafe {
                 renderer.render_by_line(DisplayWrapper {
                     display: &mut disp,
@@ -201,7 +236,7 @@ async fn main(_spawner: Spawner) -> ! {
             };
         });
 
-        info!("Finished a frame");
+        info!("Finished a frame (drew={})", drew);
         if !window.has_active_animations() {
             if let Some(duration) = slint::platform::duration_until_next_timer_update() {
                 let embassy_duration = Duration::from_micros(duration.as_micros() as u64);
@@ -214,6 +249,8 @@ async fn main(_spawner: Spawner) -> ! {
     }
 
 }
+
+const PANEL_W: usize = 480;
 
 struct DisplayWrapper<'a, D> {
     display: &'a mut D,
@@ -248,9 +285,11 @@ impl<'a, B: display_driver::DisplayBus, P: display_driver::Panel<B>>
             // Store state indicating this even line is buffered
             *self.last_even_line = Some(line);
 
-            // Write to the FIRST half of the buffer (Offset 0)
+            // Write to the FIRST half of the buffer (Offset 0), placed at the
+            // span's x offset so partial spans land in the right columns.
             // Memory Layout: [ <Even Line Data> | ... empty ... ]
-            render_fn(&mut self.line_buffer[0..range.end]);
+            let start = range.start;
+            render_fn(&mut self.line_buffer[start..range.end]);
         } else {
             // --- Handling Odd Line ---
 
@@ -258,9 +297,11 @@ impl<'a, B: display_driver::DisplayBus, P: display_driver::Panel<B>>
                 Some(prev_line) if prev_line == line - 1 => {
                     // Valid pair sequence (e.g., Line 0 followed by Line 1)
 
-                    // Write to the SECOND half of the buffer, immediately following the even line.
+                    // Write to the SECOND half of the buffer, one full panel
+                    // stride after the even line.
                     // Memory Layout: [ <Even Line Data> | <Odd Line Data> ]
-                    render_fn(&mut self.line_buffer[width..width + range.end]);
+                    let (start, end) = (range.start, range.end);
+                    render_fn(&mut self.line_buffer[PANEL_W + start..PANEL_W + end]);
 
                     // Construct Area covering exactly 2 lines
                     let area = Area {
@@ -270,24 +311,26 @@ impl<'a, B: display_driver::DisplayBus, P: display_driver::Panel<B>>
                         h: 2, // Strictly 2 lines
                     };
 
-                    // Slice the buffer to include exactly both lines (2 * width)
-                    let buffer_slice = &self.line_buffer[0..width * 2];
+                    // Slice the buffer to include exactly both lines (2 * PANEL_W)
+                    let buffer_slice = &mut self.line_buffer[0..PANEL_W * 2];
+
+                    // CO5300 wants big-endian RGB565; swap in SRAM so the DMA stays zero-copy and aligned.
+                    for p in buffer_slice.iter_mut() {
+                        p.0 = p.0.swap_bytes();
+                    }
+
                     let byte_buffer: &[u8] = bytemuck::cast_slice(buffer_slice);
 
-                    // unsafe {
-                    //     cortex_m::Peripherals::steal()
-                    //         .SCB
-                    //         .clean_dcache_by_slice(byte_buffer);
-                    // }
-
                     // Perform the transfer
-                    embassy_futures::block_on(self.display.write_pixels(
+                    if embassy_futures::block_on(self.display.write_pixels(
                         area,
                         FrameControl::new_standalone(),
-                        &byte_buffer[1..] //TODO: off by one? Which layer does this introduce? Suspect slint: https://github.com/jphein/esp32c6-watch/tree/03742a9db7cda4b60119bf6ab80fcf680be78594/crates/i-slint-renderer-software
-                        // &byte_buffer
+                        byte_buffer,
                     ))
-                    .ok();
+                    .is_err()
+                    {
+                        defmt::warn!("write_pixels FAILED at y={}", area.y);
+                    }
                 }
                 Some(prev_line) => {
                     defmt::warn!(

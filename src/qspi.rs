@@ -113,10 +113,17 @@ impl<'d> QspiDevice for EspHalQspiDevice<'d> {
 // Type-conversion helpers (display-driver types → esp-hal types)
 // ---------------------------------------------------------------------------
 
-/// Check if a slice is located in internal SRAM (0x3FC0_0000 - 0x3FFF_FFFF).
+/// Check if a slice is located in internal SRAM.
+///
+/// ESP32-C6 internal RAM is mapped at 0x4080_0000 (see esp-hal's
+/// `ld/esp32c6/memory.x`). The old 0x3FC0_0000 base is the ESP32-S3 window,
+/// which meant this always returned false on the C6.
 fn is_slice_in_dram(data: &[u8]) -> bool {
-    let ptr = data.as_ptr() as usize;
-    ptr >= 0x3FC0_0000 && ptr < 0x4000_0000
+    const DRAM_BASE: usize = 0x4080_0000;
+    const DRAM_END: usize = 0x4088_0000;
+    let start = data.as_ptr() as usize;
+    let end = start + data.len();
+    start >= DRAM_BASE && end <= DRAM_END
 }
 
 enum DmaOperationKind {
