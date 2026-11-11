@@ -765,6 +765,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "cst92xx"
+version = "0.2.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "879ed2bad200332bf3d47c88e349076f02d136b2d8cd020c717469b9beae921a"
+dependencies = [
+ "defmt 1.1.1",
+ "embedded-hal 1.0.0",
+]
+
+[[package]]
 name = "cursor-icon"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -985,6 +995,7 @@ version = "0.1.0"
 dependencies = [
  "bytemuck",
  "critical-section",
+ "cst92xx",
  "defmt 1.1.1",
  "display-driver",
  "display-driver-co5300",
