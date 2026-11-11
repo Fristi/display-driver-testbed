@@ -10,12 +10,15 @@
 use core::cell::RefCell;
 
 use alloc::rc::Rc;
-use defmt::info;
-use display_co5300_test::axp2101::{self, Axp2101Power};
+use cst92xx::{CST92xx, TouchConfig};
+use defmt::{error, info, warn};
+use display_co5300_test::axp2101::{Axp2101Power};
+use display_co5300_test::touch::{TouchEvent, TouchTracker};
 use display_driver::{Area, DisplayDriver, FrameControl};
 use embassy_executor::Spawner;
 use embassy_time::{Duration, Timer, Instant};
 use esp_backtrace as _;
+use esp_hal::gpio::{Input, InputConfig, Level, Output, OutputConfig, Pull};
 use esp_hal::{clock::CpuClock, i2c::master::I2c};
 use esp_hal::timer::timg::TimerGroup;
 use esp_println as _;
@@ -197,6 +200,26 @@ async fn main(_spawner: Spawner) -> ! {
     disp.set_brightness(0xff).await.unwrap();
     info!("Brightness set to 255.");
 
+    // ── Touch controller (CST9220) ────────────────────────────────────────
+    // Shares I2C0 with the AXP2101. Pins from the board's schematic:
+    // SDA=GPIO8, SCL=GPIO7, RST=GPIO11. `TP_INT` (GPIO5) is not used: the
+    // controller is polled from the render loop instead, in the same thread,
+    // which keeps the shared I2C bus free of cross-task locking.
+    let touch_rst = Output::new(peripherals.GPIO11, Level::High, OutputConfig::default());
+    let touch_dev = embedded_hal_bus::i2c::RefCellDevice::new(&i2c_refcell);
+    let mut touch = CST92xx::new(touch_dev, esp_hal::delay::Delay::new())
+        .with_reset(touch_rst)
+        // Scale whatever the panel reports to the 480x480 Slint window.
+        .with_config(TouchConfig::default().with_target_resolution(480, 480));
+
+    match touch.init() {
+        Ok(()) => info!("Touch controller ready: {}", touch.model_name()),
+        Err(e) => error!("Touch init failed: {:?}", e),
+    }
+
+    let mut touch_tracker = TouchTracker::new();
+    let mut last_touch_poll = Instant::now();
+
     // --- Slint Platform Setup ---
     info!("Slint Platform Init");
     let window = slint::platform::software_renderer::MinimalSoftwareWindow::new(Default::default());
@@ -219,14 +242,38 @@ async fn main(_spawner: Spawner) -> ! {
 
     info!("Entering idle loop.");
 
+    // How long the loop may sleep between iterations. Touch polling needs a
+    // deadline no later than `TOUCH_POLL_IDLE`, so it clamps the wait.
+    const TOUCH_POLL_IDLE: Duration = Duration::from_millis(20);
+    // While a finger is down Slint animates the pressed state and gestures can
+    // outrun a 20 ms sample; poll faster so drags feel responsive.
+    const TOUCH_POLL_ACTIVE: Duration = Duration::from_millis(10);
+
     loop {
-        info!("Start a frame");
         slint::platform::update_timers_and_animations();
+
+        // --- Touch input ---
+        let poll_interval = if touch_tracker.is_active() {
+            TOUCH_POLL_ACTIVE
+        } else {
+            TOUCH_POLL_IDLE
+        };
+        if last_touch_poll.elapsed() >= poll_interval {
+            last_touch_poll = Instant::now();
+            match touch.touches() {
+                Ok(points) => {
+                    if let Some(event) = touch_tracker.update(&points) {
+                        dispatch_touch(&window, event);
+                    }
+                }
+                Err(e) => warn!("Touch read failed: {:?}", e),
+            }
+        }
 
         // State tracker for the double buffering logic
         let mut last_even_line_index: Option<usize> = None;
 
-        let drew = window.draw_if_needed(|renderer| {
+        let _drew = window.draw_if_needed(|renderer| {
             unsafe {
                 renderer.render_by_line(DisplayWrapper {
                     display: &mut disp,
@@ -236,18 +283,63 @@ async fn main(_spawner: Spawner) -> ! {
             };
         });
 
-        info!("Finished a frame (drew={})", drew);
-        if !window.has_active_animations() {
-            if let Some(duration) = slint::platform::duration_until_next_timer_update() {
-                let embassy_duration = Duration::from_micros(duration.as_micros() as u64);
-                Timer::after(embassy_duration).await;
-            } else {
-                Timer::after(Duration::from_millis(10)).await;
-            }
+        let mut wait = if window.has_active_animations() {
+            // Animations are redrawn continuously. Cap the frame rate: each whole
+            // frame is a 480x480 QSPI transfer, so ~30 fps keeps the bus and the
+            // CPU from being saturated.
+            Duration::from_millis(33)
+        } else if let Some(duration) = slint::platform::duration_until_next_timer_update() {
+            // Sleep until the next Slint timer (e.g. the session countdown).
+            Duration::from_micros(duration.as_micros() as u64)
+        } else {
+            // Nothing scheduled: poll occasionally so input still gets a chance.
+            Duration::from_millis(50)
+        };
+
+        // Never sleep past the next touch sample.
+        let until_poll = poll_interval
+            .checked_sub(last_touch_poll.elapsed())
+            .unwrap_or(Duration::MIN);
+        if until_poll < wait {
+            wait = until_poll;
         }
-        Timer::after(Duration::from_secs(1)).await;
+        if wait > Duration::MIN {
+            Timer::after(wait).await;
+        }
     }
 
+}
+
+/// Forward a touch edge to Slint as a mouse event.
+///
+/// Slint's software renderer only reacts to press/release for `TouchArea`
+/// clicks, so a contact maps naturally onto the left mouse button. Coordinates
+/// are physical pixels, converted to Slint's logical space (scale factor 1).
+fn dispatch_touch(
+    window: &slint::platform::software_renderer::MinimalSoftwareWindow,
+    event: TouchEvent,
+) {
+    use slint::platform::{PointerEventButton, WindowEvent};
+
+    let kind = match event {
+        TouchEvent::Press { x, y } => WindowEvent::PointerPressed {
+            position: slint::LogicalPosition::new(x as f32, y as f32),
+            button: PointerEventButton::Left,
+        },
+        TouchEvent::Move { x, y } => WindowEvent::PointerMoved {
+            position: slint::LogicalPosition::new(x as f32, y as f32),
+        },
+        TouchEvent::Release { x, y } => WindowEvent::PointerReleased {
+            position: slint::LogicalPosition::new(x as f32, y as f32),
+            button: PointerEventButton::Left,
+        },
+    };
+
+    if let Err(e) = window.dispatch_event_with_result(kind) {
+        // warn!("Touch event rejected: {:?}", e);
+    }
+    // A press/move/release sequence dirties the items under the pointer.
+    window.request_redraw();
 }
 
 const PANEL_W: usize = 480;
