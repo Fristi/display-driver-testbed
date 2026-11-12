@@ -14,6 +14,14 @@ enum Screen {
     customize,
 }
 
+// Audible cues. The UI only names them; a host turns them into samples.
+export enum Sound {
+    breath-in,
+    breath-out,
+    hold,
+    ding,
+}
+
 // "6-0-2-0" = inhale-hold-exhale-hold, in seconds.
 struct BreathPattern {
     name: string,
@@ -665,6 +673,14 @@ export component MainWindow inherits Window {
 
     in-out property <Screen> screen: Screen.start;
 
+    // Host port: fired on every phase change and once when the session ends.
+    callback play-sound(Sound);
+
+    // Host entry point: start straight into a session from outside the UI.
+    public function start-session-now() {
+        root.start-session();
+    }
+
     property <[BreathPattern]> patterns: [
         { name: "Awake", hint: "Morning energy", inhale: 6, hold1: 0, exhale: 2, hold2: 0, accent: #fce38a },
         { name: "Deep Calm", hint: "Stress relief", inhale: 4, hold1: 7, exhale: 8, hold2: 0, accent: #4facfe },
@@ -672,8 +688,9 @@ export component MainWindow inherits Window {
     ];
     property <[int]> durations: [5, 10, 15, 20];
 
-    property <int> selected-pattern: 0;
-    property <int> selected-duration: 10;
+    // Public so a host can preset a session (e.g. a hardware shortcut button).
+    in-out property <int> selected-pattern: 0;
+    in-out property <int> selected-duration: 10;
     property <bool> scent-connected: false;
 
     // Session state
@@ -726,10 +743,25 @@ export component MainWindow inherits Window {
         return ph;
     }
 
+    // Phase -> cue. Silent for the zero-second phases that get skipped.
+    function emit-phase-sound(ph: int) {
+        if root.phase-duration(ph) <= 0 {
+            return;
+        }
+        if ph == 0 {
+            root.play-sound(Sound.breath-in);
+        } else if ph == 2 {
+            root.play-sound(Sound.breath-out);
+        } else {
+            root.play-sound(Sound.hold);
+        }
+    }
+
     function enter-phase(ph: int) {
         root.phase = ph;
         root.phase-seconds = root.phase-duration(ph);
         root.ring-size = root.phase-target(ph);
+        root.emit-phase-sound(ph);
     }
 
     function start-session() {
@@ -755,6 +787,7 @@ export component MainWindow inherits Window {
             root.remaining = 0;
             root.running = false;
             root.finished = true;
+            root.play-sound(Sound.ding);
             return;
         }
 
@@ -777,10 +810,14 @@ export component MainWindow inherits Window {
     // snapping to full size when the session screen is instantiated.
     Timer {
         interval: 120ms;
-        running: root.arming;
+        // Gated on the screen too: if the host navigates away before the
+        // arming delay elapses, the first inhale must not fire.
+        running: root.arming && root.screen == Screen.session;
         triggered() => {
             root.arming = false;
             root.ring-size = root.phase-target(root.phase);
+            // The first inhale starts here, not when `start-session` runs.
+            root.emit-phase-sound(root.phase);
         }
     }
 

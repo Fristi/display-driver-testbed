@@ -1,0 +1,28 @@
+[package]
+edition      = "2021"
+name         = "ui"
+version      = "0.1.0"
+
+# The UI crate is no_std on hardware and std in the browser. Slint's feature set
+# differs per target for the same reason: the MCU uses the software renderer with
+# libm, the browser uses winit + FemtoVG (WebGL).
+[dependencies]
+
+[target.'cfg(target_family = "wasm")'.dependencies]
+slint = { version = "=1.18.1", default-features = false, features = [
+  "std",
+  "backend-winit",
+  "renderer-femtovg",
+  "compat-1-2",
+] }
+
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
+slint = { version = "=1.18.1", default-features = false, features = [
+  "renderer-software",
+  "libm",
+  "unsafe-single-threaded",
+  "compat-1-2",
+] }
+
+[build-dependencies]
+slint-build = "=1.18.1"

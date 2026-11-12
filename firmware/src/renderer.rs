@@ -5,7 +5,7 @@
 //! its odd partner arrives and then flushes both as a single 2-line window.
 
 use display_driver::{Area, DisplayBus, DisplayDriver, FrameControl, Panel};
-use slint::platform::software_renderer::{LineBufferProvider, MinimalSoftwareWindow, Rgb565Pixel};
+use ui::slint::platform::software_renderer::{LineBufferProvider, MinimalSoftwareWindow, Rgb565Pixel};
 
 /// Panel width in pixels, and the stride of one line in [`LINE_BUFFER`].
 const PANEL_W: usize = 480;
@@ -41,18 +41,18 @@ where
 /// are physical pixels, converted to Slint's logical space (scale factor 1).
 pub fn dispatch_touch(window: &MinimalSoftwareWindow, event: crate::touch::TouchEvent) {
     use crate::touch::TouchEvent;
-    use slint::platform::{PointerEventButton, WindowEvent};
+    use ui::slint::platform::{PointerEventButton, WindowEvent};
 
     let kind = match event {
         TouchEvent::Press { x, y } => WindowEvent::PointerPressed {
-            position: slint::LogicalPosition::new(x as f32, y as f32),
+            position: ui::slint::LogicalPosition::new(x as f32, y as f32),
             button: PointerEventButton::Left,
         },
         TouchEvent::Move { x, y } => WindowEvent::PointerMoved {
-            position: slint::LogicalPosition::new(x as f32, y as f32),
+            position: ui::slint::LogicalPosition::new(x as f32, y as f32),
         },
         TouchEvent::Release { x, y } => WindowEvent::PointerReleased {
-            position: slint::LogicalPosition::new(x as f32, y as f32),
+            position: ui::slint::LogicalPosition::new(x as f32, y as f32),
             button: PointerEventButton::Left,
         },
     };
