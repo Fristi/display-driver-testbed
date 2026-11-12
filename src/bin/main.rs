@@ -11,6 +11,7 @@ extern crate alloc;
 
 use core::cell::RefCell;
 
+use anyhow::anyhow;
 use cst92xx::{CST92xx, TouchConfig};
 use defmt::{error, info, warn};
 use display_co5300_test::{display, platform, renderer};
@@ -54,9 +55,26 @@ esp_bootloader_esp_idf::esp_app_desc!();
     reason = "it's not unusual to allocate larger buffers etc. in main"
 )]
 #[esp_rtos::main]
-async fn main(_spawner: Spawner) -> ! {
+async fn main(spawner: Spawner) -> ! {
     unsafe { ALLOCATOR.init(core::ptr::addr_of_mut!(HEAP) as usize, HEAP_SIZE) }
 
+    match run(spawner).await {
+        Ok(()) => error!("Main loop exited unexpectedly"),
+        // Debug prints the full anyhow cause chain; Display would only show the top message.
+        Err(err) => error!("Fatal: {:?}", defmt::Debug2Format(&err)),
+    }
+
+    // Halt in place: resetting would only repeat the same failure.
+    loop {
+        Timer::after(Duration::from_secs(3600)).await;
+    }
+}
+
+#[allow(
+    clippy::large_stack_frames,
+    reason = "it's not unusual to allocate larger buffers etc. in main"
+)]
+async fn run(_spawner: Spawner) -> anyhow::Result<()> {
     let config = esp_hal::Config::default().with_cpu_clock(CpuClock::max());
     let peripherals = esp_hal::init(config);
 
@@ -73,13 +91,13 @@ async fn main(_spawner: Spawner) -> ! {
         peripherals.I2C0,
         I2cConfig::default().with_frequency(esp_hal::time::Rate::from_khz(400)),
     )
-    .expect("i2c failed")
+    .map_err(|e| anyhow!("I2C init failed: {e}"))?
     .with_sda(peripherals.GPIO8)
     .with_scl(peripherals.GPIO7);
     let i2c_refcell = RefCell::new(i2c);
 
     // ── Display ────────────────────────────────────────────────────────────
-    display::power_cycle_panel(&i2c_refcell).await;
+    display::power_cycle_panel(&i2c_refcell).await?;
 
     let pins = display::QspiPins {
         cs: peripherals.GPIO15,
@@ -89,8 +107,8 @@ async fn main(_spawner: Spawner) -> ! {
         sio2: peripherals.GPIO3,
         sio3: peripherals.GPIO4,
     };
-    let mut disp =
-        display::init(peripherals.SPI2, pins, peripherals.DMA_CH0, &mut display::delay()).await;
+    let mut disp = display::init(peripherals.SPI2, pins, peripherals.DMA_CH0, &mut display::delay())
+        .await?;
 
     // ── Touch controller (CST9220) ─────────────────────────────────────────
     // Shares I2C0 with the AXP2101. `TP_INT` (GPIO5) is not used: the
@@ -112,11 +130,11 @@ async fn main(_spawner: Spawner) -> ! {
     let mut last_touch_poll = Instant::now();
 
     // ── Slint UI ───────────────────────────────────────────────────────────
-    let window = platform::init(PANEL_SIZE, PANEL_SIZE);
+    let window = platform::init(PANEL_SIZE, PANEL_SIZE)?;
 
-    let ui = MainWindow::new().unwrap();
+    let ui = MainWindow::new().map_err(|e| anyhow!("Window creation failed: {e}"))?;
     // MinimalSoftwareWindow only renders once it is visible and dirty.
-    ui.show().unwrap();
+    ui.show().map_err(|e| anyhow!("Window show failed: {e}"))?;
     window.request_redraw();
 
     info!("Entering idle loop.");

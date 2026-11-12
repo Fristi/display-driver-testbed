@@ -24,6 +24,9 @@ esp-rtos = { version = "0.3.0", features = [
 defmt                  = "1.0.1"
 esp-bootloader-esp-idf = { version = "0.5.0", features = ["defmt", "esp32c6"] }
 
+# no_std (alloc-only) error propagation for the boot path.
+anyhow = { version = "1.0", default-features = false }
+
 embassy-executor = { version = "0.10.0", features = ["defmt"] }
 embassy-time = { version = "0.5.0", features = ["defmt"] }
 

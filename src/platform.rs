@@ -2,6 +2,7 @@
 
 use alloc::rc::Rc;
 
+use anyhow::anyhow;
 use embassy_time::Instant;
 use slint::platform::software_renderer::MinimalSoftwareWindow;
 
@@ -30,7 +31,7 @@ impl slint::platform::Platform for McuPlatform {
 /// Install the platform and return the window the UI renders into.
 ///
 /// Must be called once, before any Slint component is created.
-pub fn init(width: u32, height: u32) -> Rc<MinimalSoftwareWindow> {
+pub fn init(width: u32, height: u32) -> anyhow::Result<Rc<MinimalSoftwareWindow>> {
     let window = MinimalSoftwareWindow::new(Default::default());
     window.set_size(slint::PhysicalSize::new(width, height));
 
@@ -38,7 +39,7 @@ pub fn init(width: u32, height: u32) -> Rc<MinimalSoftwareWindow> {
         window: window.clone(),
         start_time: Instant::now(),
     }))
-    .unwrap();
+    .map_err(|e| anyhow!("Slint platform init failed: {e}"))?;
 
-    window
+    Ok(window)
 }

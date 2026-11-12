@@ -5,6 +5,7 @@
 
 use core::cell::RefCell;
 
+use anyhow::anyhow;
 use display_driver::{
     panel::reset::NoResetPin, ColorFormat, DisplayDriver, LCDResetOption,
 };
@@ -76,17 +77,27 @@ static BOUNCE_BUF: StaticCell<[u8; BOUNCE_BUF_SIZE]> = StaticCell::new();
 ///
 /// The 2.16 board has no LCD reset pin: Waveshare resets the panel by
 /// power-cycling the ALDO3 rail. Without this the panel ignores init.
-pub async fn power_cycle_panel(i2c: &RefCell<I2c<'static, Blocking>>) {
+pub async fn power_cycle_panel(i2c: &RefCell<I2c<'static, Blocking>>) -> anyhow::Result<()> {
     let mut axp2101 = Axp2101Power::new(RefCellDevice::new(i2c));
-    axp2101.init().expect("Failed to init AXP2101");
+    axp2101
+        .init()
+        .map_err(|e| anyhow!("AXP2101 init failed: {e:?}"))?;
 
     defmt::info!("Power-cycling panel rail (ALDO3)");
-    axp2101.enable_aldo3().expect("ALDO3 on");
+    axp2101
+        .enable_aldo3()
+        .map_err(|e| anyhow!("ALDO3 on failed: {e:?}"))?;
     Timer::after(Duration::from_millis(100)).await;
-    axp2101.disable_aldo3().expect("ALDO3 off");
+    axp2101
+        .disable_aldo3()
+        .map_err(|e| anyhow!("ALDO3 off failed: {e:?}"))?;
     Timer::after(Duration::from_millis(100)).await;
-    axp2101.enable_aldo3().expect("ALDO3 on");
+    axp2101
+        .enable_aldo3()
+        .map_err(|e| anyhow!("ALDO3 on failed: {e:?}"))?;
     Timer::after(Duration::from_millis(100)).await;
+
+    Ok(())
 }
 
 /// Bring up the QSPI bus and the CO5300 panel, leaving the backlight on full.
@@ -95,12 +106,13 @@ pub async fn init(
     pins: QspiPins,
     dma: DMA_CH0<'static>,
     delay: &mut impl DelayNs,
-) -> BoardDisplay {
+) -> anyhow::Result<BoardDisplay> {
     let (rx_buffer, rx_descriptors, _, _) = esp_hal::dma_buffers!(4096, 0);
-    let dma_rx_buf = DmaRxBuf::new(rx_descriptors, rx_buffer).unwrap();
+    let dma_rx_buf = DmaRxBuf::new(rx_descriptors, rx_buffer)
+        .map_err(|e| anyhow!("DMA rx buffer setup failed: {e:?}"))?;
 
     let tx_descriptors = TX_DESCRIPTORS.init([DmaDescriptor::EMPTY; DMA_TX_DESCRIPTORS]);
-    let bounce_buf = BOUNCE_BUF.init([0; BOUNCE_BUF_SIZE]);
+    let bounce_buf = BOUNCE_BUF.init_with(|| [0; BOUNCE_BUF_SIZE]);
 
     let cs = Output::new(pins.cs, Level::High, OutputConfig::default());
     let spi = Spi::new(
@@ -109,7 +121,7 @@ pub async fn init(
             .with_frequency(Rate::from_mhz(80))
             .with_mode(esp_hal::spi::Mode::_0),
     )
-    .unwrap()
+    .map_err(|e| anyhow!("SPI init failed: {e}"))?
     .with_sck(pins.sck)
     .with_sio0(pins.sio0)
     .with_sio1(pins.sio1)
@@ -134,11 +146,13 @@ pub async fn init(
         .with_color_format(ColorFormat::RGB565)
         .init(delay)
         .await
-        .unwrap();
+        .map_err(|e| anyhow!("Panel init failed: {e:?}"))?;
 
-    disp.set_brightness(0xff).await.unwrap();
+    disp.set_brightness(0xff)
+        .await
+        .map_err(|e| anyhow!("Set brightness failed: {e:?}"))?;
     defmt::info!("Brightness set to 255.");
-    disp
+    Ok(disp)
 }
 
 /// Delay provider used for panel initialization.
