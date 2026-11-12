@@ -10,7 +10,7 @@
 
 use display_driver_qspi::{LineMode, PhaseConfig, QspiDevice, QspiTransaction};
 use esp_hal::{
-    dma::{DmaRxBuf, DmaTxBuf}, gpio::Output, spi::master::{Address, Command, DataMode},
+    dma::{DmaRxBuf, DmaTxBuf}, spi::master::{Address, Command, DataMode},
 };
 
 /// Wraps an esp-hal `SpiDma<Async>` to implement the [`QspiDevice`] trait
